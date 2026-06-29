@@ -1,18 +1,22 @@
 {
-  "name": "pi-hud",
+  "name": "@taylorsatula/pi-hud",
   "version": "0.1.0",
   "description": "Ambient HUD injected into the model's context on every LLM call. Live briefing notes (time, context budget, git, cwd) that refresh as assistant messages complete — kept off the transcript and out of the user's view.",
   "keywords": ["pi-package"],
+  "type": "module",
   "main": "index.ts",
   "pi": {
     "extensions": ["./index.ts"]
   },
   "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"
   },
-  "peerDependenciesMeta": {
-    "@earendil-works/pi-ai": { "optional": false },
-    "@earendil-works/pi-coding-agent": { "optional": false }
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.79.0",
+    "@earendil-works/pi-ai": "^0.79.0",
+    "@earendil-works/pi-coding-agent": "^0.79.0",
+    "typescript": "^5.0.0"
   }
 }
