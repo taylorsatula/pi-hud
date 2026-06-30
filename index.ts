@@ -90,7 +90,7 @@ export default function (pi: ExtensionAPI): void {
 	 * message stale" even mid-aggentic-run.
 	 */
 	const refresh = async (ctx: ExtensionContext): Promise<void> => {
-		gitInfo = await fetchGit(pi, ctx.cwd);
+		gitInfo = await fetchGit(ctx.cwd);
 		await rebuild(ctx);
 	};
 

@@ -14,7 +14,8 @@
  * follow the same contract: async render returning string | null.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 
 // ── Contributed section types ────────────────────────────────────────
@@ -43,22 +44,31 @@ export interface GitInfo {
 
 /**
  * Fetch git branch + dirty count in a single `git status --porcelain=v1 -b`.
- * Fault-tolerant: returns null if cwd is not a git repo, git is missing, or
- * the call times out. Never throws.
+ * Uses Node's spawn directly (not pi.exec) to avoid bash-layer restrictions
+ * like prepare-mode command-substitution blocks. Fault-tolerant: returns null
+ * if cwd is not a git repo, git is missing, or the call times out. Never throws.
  */
 export async function fetchGit(
-	pi: ExtensionAPI,
 	cwd: string,
 ): Promise<GitInfo | null> {
 	try {
-		const res = await pi.exec("git", ["status", "--porcelain=v1", "-b"], {
+		const child = spawn("git", ["status", "--porcelain=v1", "-b"], {
 			cwd,
 			timeout: 2000,
 		});
-		// 128 = "not a git repository" (and similar fatal errors)
-		if (res.code !== 0) return null;
 
-		const lines = res.stdout.split("\n").filter((l) => l.length > 0);
+		let stdout = "";
+		child.stdout.on("data", (chunk) => (stdout += chunk));
+
+		await new Promise<void>((resolve) => {
+			child.on("close", () => resolve());
+			child.on("error", () => resolve());
+		});
+
+		// 128 = "not a git repository" (and similar fatal errors)
+		if (child.exitCode !== 0) return null;
+
+		const lines = stdout.split("\n").filter((l) => l.length > 0);
 		if (lines.length === 0) return null;
 
 		const branchLine = lines[0] ?? "";
