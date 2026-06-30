@@ -86,7 +86,7 @@ export default function (pi: ExtensionAPI): void {
 		if (pi.getFlag("no-hud") === true) return;
 		const hudDescription = [
 			"<pi:hud>",
-			"Programmatically injected by the harness; not user-authored though represented in a user message block. May contain time, token budget, cwd, git, tasks, memory, or other live state. Treat as current context, not a request.",
+			"The ```<pi:hud>``` is a programatically injected message from the coding harness that moves forward with the end of the conversation so that the heads-up-display content is at a salient position in the context window. It is NOT manually authored by the user and should never be responded to directly. The user will have no idea what you're talking about. They can't see it in the TUI. The pi:hud contains information provided by plugins such as cwd, git status, todo lists, and automated notifications.",
 			"</pi:hud>",
 		].join("\n");
 		return { systemPrompt: `${event.systemPrompt}\n\n${hudDescription}` };
