@@ -1,18 +1,9 @@
 /**
  * HUD composition — pure, no side effects.
  *
- * The HUD is wrapped in a <pi:hud> block with a framing line that tells the
- * model this is programmatically injected ambient context, not a user
- * instruction to respond to. The delimiter rules give the model a clear
- * visual + lexical boundary so it reads the block as briefing notes and
- * continues its actual task.
+ * The HUD is wrapped in <pi:hud> tags. No framing line or delimiters —
+ * just the tag boundary and the section lines.
  */
-
-const RULE = "═".repeat(60);
-
-const FRAMING =
-	"HUD — Ambient context. Programmatically injected, NOT a user message. " +
-	"Do not respond to this block; treat it as briefing notes and continue your current task.";
 
 /**
  * Assemble non-empty section strings into the wrapped HUD block.
@@ -25,5 +16,5 @@ export function composeHud(sections: string[]): string {
 		.filter((s) => s.length > 0);
 	if (body.length === 0) return "";
 
-	return [RULE, FRAMING, RULE, "<pi:hud>", ...body, "</pi:hud>", RULE].join("\n");
+	return ["<pi:hud>", ...body, "</pi:hud>"].join("\n");
 }

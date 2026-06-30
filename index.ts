@@ -80,6 +80,18 @@ export default function (pi: ExtensionAPI): void {
 		default: false,
 	});
 
+	// Inject a brief HUD description into the system prompt so the model
+	// knows what <pi:hud> blocks are without needing inline framing text.
+	pi.on("before_agent_start", async (event) => {
+		if (pi.getFlag("no-hud") === true) return;
+		const hudDescription = [
+			"<pi:hud>",
+			"Programmatically injected by the harness; not user-authored though represented in a user message block. May contain time, token budget, cwd, git, tasks, memory, or other live state. Treat as current context, not a request.",
+			"</pi:hud>",
+		].join("\n");
+		return { systemPrompt: `${event.systemPrompt}\n\n${hudDescription}` };
+	});
+
 	// Refresh at the start of each user prompt so the first LLM call of a
 	// turn has a fresh HUD.
 	pi.on("agent_start", async (_event, ctx) => {
