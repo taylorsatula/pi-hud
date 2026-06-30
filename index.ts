@@ -1,11 +1,10 @@
 /**
- * pi-hud — Ambient HUD for the model.
+ * pi-hud — Ambient HUD framework for the model.
  *
  * Injects a small "HUD" user message into the model's context on every LLM
- * call, carrying live ambient state: current time, context budget, git
- * branch/dirty, and working directory. The HUD is rebuilt whenever an
- * assistant message completes (and at the start of each user prompt), so it
- * stays current during long agentic runs.
+ * call. pi-hud itself carries no built-in sections — it is purely the vessel
+ * that collects contributed sections from other extensions via the shared
+ * EventBus (`hud_section`) and composes them into the injected block.
  *
  * Design (see README.md for full rationale):
  *
@@ -26,26 +25,20 @@
  *  - Hidden from the user: no widget, no transcript footprint. Set the
  *    environment variable PI_HUD_DEBUG=1 to log the injected payload to
  *    stderr for verification. Use the --no-hud flag to disable injection.
+ *
+ *  - Refreshed on `agent_start`, assistant `message_end`, and
+ *    `tool_execution_end`. Each refresh re-renders all contributed sections
+ *    fresh via their `render(ctx)` functions.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { composeHud } from "./compose";
-import {
-	fetchGit,
-	renderBudget,
-	renderClock,
-	renderContributedSections,
-	renderCwd,
-	renderGit,
-	type GitInfo,
-	type HudSection,
-} from "./sections";
+import { renderContributedSections, type HudSection } from "./sections";
 
 export default function (pi: ExtensionAPI): void {
-	// Cached state. Refreshed on agent_start and on every assistant
-	// message_end; read on every context (LLM call).
+	// Cached HUD string. Rebuilt on agent_start, assistant message_end,
+	// and tool_execution_end; read on every context (LLM call).
 	let cachedHud: string | null = null;
-	let gitInfo: GitInfo | null = null;
 
 	// Contributed sections collected from other extensions via the shared
 	// EventBus. Populated during extension load phase; frozen by agent_start.
@@ -69,28 +62,14 @@ export default function (pi: ExtensionAPI): void {
 		}
 	});
 
-	/** Rebuild the HUD string from current sections. Pure given the cache. */
+	/** Rebuild the HUD string from current contributed sections. */
 	const rebuild = async (ctx: ExtensionContext): Promise<void> => {
-		const builtInSections = [
-			renderClock(),
-			renderBudget(ctx),
-			renderGit(gitInfo),
-			renderCwd(ctx.cwd),
-		].filter((s): s is string => Boolean(s));
-
-		const contributedSections = await renderContributedSections(contributions, ctx);
-
-		cachedHud = composeHud(builtInSections, contributedSections) || null;
+		const sections = await renderContributedSections(contributions, ctx);
+		cachedHud = composeHud(sections) || null;
 	};
 
-	/**
-	 * Refresh expensive state (git) then rebuild the HUD.
-	 * Runs on agent_start and on assistant message_end, so the HUD reflects
-	 * state as of the most recent assistant message — "≤ one assistant
-	 * message stale" even mid-aggentic-run.
-	 */
+	/** Refresh all contributed sections then rebuild the HUD. */
 	const refresh = async (ctx: ExtensionContext): Promise<void> => {
-		gitInfo = await fetchGit(ctx.cwd);
 		await rebuild(ctx);
 	};
 
@@ -102,15 +81,15 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	// Refresh at the start of each user prompt so the first LLM call of a
-	// turn has a fresh HUD (clock advanced, git may have changed, etc.).
+	// turn has a fresh HUD.
 	pi.on("agent_start", async (_event, ctx) => {
 		await refresh(ctx);
 	});
 
 	// Refresh after every assistant message — NOT on tool calls/results.
-	// This is what keeps the HUD live across long multi-step agentic runs:
+	// This keeps the HUD live across long multi-step agentic runs:
 	// each time the model finishes an assistant step (which may include tool
-	// calls), the HUD is rebuilt with fresh git state and a fresh clock.
+	// calls), the HUD is rebuilt with fresh data from all contributors.
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
 		await refresh(ctx);
