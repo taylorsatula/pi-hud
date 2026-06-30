@@ -116,6 +116,13 @@ export default function (pi: ExtensionAPI): void {
 		await refresh(ctx);
 	});
 
+	// Also refresh after each tool execution ends so the HUD reflects
+	// state changes from file writes, edits, bash commands, etc.
+	// This makes the HUD ≤ one tool call stale mid-agentic-run.
+	pi.on("tool_execution_end", async (_event, ctx) => {
+		await refresh(ctx);
+	});
+
 	// Inject the cached HUD as a user message at the tail of every LLM call.
 	pi.on("context", async (event) => {
 		if (pi.getFlag("no-hud") === true) return;
