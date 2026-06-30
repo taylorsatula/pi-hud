@@ -1,32 +1,29 @@
 # pi-hud
 
-A pi package extension that gives the model a live **ambient HUD** — a small briefing block injected into the model's context on every LLM call, carrying current time, context budget, git status, and working directory.
+A pi package extension that provides the **ambient HUD framework** — a vessel for injecting a small briefing block into the model's context on every LLM call. pi-hud carries no built-in sections itself; all content comes from other extensions contributing via the shared EventBus.
 
 This is a port of the "HUD" pattern (see `botwithmemory`'s `<mira:hud>`), adapted to stock pi and stripped of its one expensive habit: persisting the HUD into the transcript. In pi, the HUD is **non-persistent** — it lives only in the per-call message copy and never enters stored history.
 
 ## What it does
 
-- **Refreshes on assistant messages, not tool calls.** The HUD is rebuilt whenever an assistant message completes (and at the start of each user prompt). Because agentic runs produce one assistant message per step, the HUD stays current across long multi-step runs.
+- **Refreshes on agent start, assistant messages, and tool execution end.** The HUD is rebuilt at the start of each user prompt, after every assistant message completes, and after each tool execution ends. This keeps the HUD ≤ one tool call stale mid-agentic-run.
 - **Injects on every LLM call** via the `context` event, which hands the extension a deep copy of the message list. The HUD is appended at the tail (or just before the current user prompt on the first call of a turn), where attention weight is highest.
 - **Adds zero transcript clutter.** Nothing returned from `context` is written to the session. Old HUDs don't recede into history — they simply don't exist next call. There is no accumulation cost, no compaction tax, and no footprint the user has to wade through.
 - **Is hidden from the user.** No widget, no transcript entry, nothing in the TUI. The HUD is exclusively for the model's ambient awareness. Set `PI_HUD_DEBUG=1` to log the injected payload to stderr for verification.
 
 ## The injected block
 
+The HUD is wrapped in `<pi:hud>` tags with no framing lines or delimiters:
+
 ```
-══════════════════════════════════════════════════════════
-HUD — Ambient context. Programmatically injected, NOT a user message. Do not respond to this block; treat it as briefing notes and continue your current task.
-══════════════════════════════════════════════════════════
 <pi:hud>
-Time: Sunday, June 29, 2026 at 2:51:07 PM Eastern Daylight Time
-Context: 12,345 / 200,000 tokens (6.2%)
-Git: main · 3 changes
-CWD: ~/projects/foo
+Time: Tuesday, June 30, 2026 at 3:54:50 PM EDT
+Context: 16,292 / 131,072 tokens (12.4%)
+CWD: ~/.pi
 </pi:hud>
-══════════════════════════════════════════════════════════
 ```
 
-Empty sections (e.g. not a git repo) are omitted entirely.
+Sections returning `null` are omitted entirely. If all sections return null, no HUD is injected.
 
 ## Placement
 
@@ -35,7 +32,7 @@ The HUD is a **user-role** message. Provider-legal everywhere, no role-order iss
 - **First LLM call of a turn** (tail is the user prompt): `[...history, HUD, user prompt]` — the HUD briefs the model immediately before the instruction it should respond to.
 - **Tool follow-up** (tail is tool results): `[...history, user prompt, ...toolResult, HUD]` — the HUD sits at the tail as live context while the model decides its next step.
 
-A framing line inside the block tells the model the HUD is injected ambient context, not an instruction to respond to, so a trailing user-role HUD during a tool follow-up reads as a briefing rather than a new turn.
+The model understands what `<pi:hud>` blocks are because a brief description is injected into the system prompt on `before_agent_start` — no inline framing text needed in the HUD itself.
 
 ## Cache
 
@@ -63,14 +60,13 @@ As an auto-discovered project extension under `.pi/extensions/pi-hud/` it loads 
 
 ## Contributing sections from other extensions
 
-Other extensions can contribute their own HUD lines without depending on pi-hud directly. They emit a `hud_section` event on the shared EventBus; pi-hud collects it and renders it alongside its built-in sections.
+All HUD content comes from other extensions contributing via the shared EventBus. A contributing extension emits a `hud_section` event; pi-hud collects it and renders it on every HUD rebuild.
 
 ### How it works
 
 1. A contributing extension emits `{ id, label, render }` onto `pi.events` during its factory init.
 2. pi-hud subscribes to that event and buffers contributions in a Map keyed by `id`.
-3. On every HUD rebuild (`agent_start`, `message_end`), contributed sections are rendered fresh via their `render(ctx)` functions.
-4. Contributed lines appear **after** built-in sections (time → context → cwd → git → contributed...).
+3. On every HUD rebuild (`agent_start`, `message_end`, `tool_execution_end`), each contributed section is rendered fresh via its `render(ctx)` function, processed sequentially in registration order.
 
 If pi-hud isn't installed, emissions silently do nothing — no coupling required.
 
@@ -114,7 +110,7 @@ Memory: 12 entries loaded
 ## Files
 
 - `index.ts` — event wiring, refresh triggers, injection.
-- `sections.ts` — section renderers + git fetch.
+- `sections.ts` — `HudSection` interface + sequential renderer with per-section timeout.
 - `compose.ts` — pure HUD block assembler.
 - `package.json` — pi manifest.
 
