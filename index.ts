@@ -87,9 +87,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (event) => {
 		if (pi.getFlag("no-hud") === true) return;
 		const hudDescription = [
-			"<pi:hud>",
-			"The ```<pi:hud>``` is a programmatically injected message from the coding harness that moves forward with the end of the conversation so that the heads-up-display content is at a salient position in the context window. It should never be responded to directly. The user will have no idea what you're talking about. They can't see it in the TUI. The pi:hud contains information provided by plugins such as cwd, git status, todo lists, and automated notifications.",
-			"</pi:hud>",
+			"A synthetic tool-call pair (assistant → tool result) may appear in the message history with the function name \"synthetic_toolcall\". This is an ambient HUD injected by the coding harness that automatically advances with the tail of the conversation, providing live context such as cwd, git status, and todos. It is inserted into the message stream before you see it — do not treat it as a call you initiated. You cannot call this tool manually; rely on the harness to manage it. The tool result contains the current HUD state as structured JSON. Treat it as ambient context — never respond to it directly or echo it back.",
 		].join("\n");
 		return { systemPrompt: `${event.systemPrompt}\n\n${hudDescription}` };
 	});
@@ -141,21 +139,30 @@ export default function (pi: ExtensionAPI): void {
 		const msgs = (payload as Record<string, unknown>).messages as any[];
 		const callId = `hud_${Date.now()}`;
 
-		msgs.push(
+		// Insert at N-1 (before the last message) so the HUD doesn't appear
+		// as the model's own output. Skip insertion if the last message is
+		// a user message — only insert before assistant or tool messages.
+		const lastMsg = msgs[msgs.length - 1];
+		if (lastMsg?.role === "user") {
+			return event.payload;
+		}
+
+		const insertIndex = msgs.length - 1;
+		msgs.splice(insertIndex, 0,
 			{
 				role: "assistant",
 				tool_calls: [
 					{
 						id: callId,
 						type: "function",
-						function: { name: "__hud", arguments: hud },
+						function: { name: "synthetic_toolcall", arguments: "{}" },
 					},
 				],
 			},
 			{
 				role: "tool",
 				tool_call_id: callId,
-				content: "ok",
+				content: hud,
 			},
 		);
 
