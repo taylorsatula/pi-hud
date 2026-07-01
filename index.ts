@@ -88,7 +88,7 @@ export default function (pi: ExtensionAPI): void {
 		if (pi.getFlag("no-hud") === true) return;
 		const hudDescription = [
 			"<pi:hud>",
-			"The ```<pi:hud>``` is a programatically injected message from the coding harness that moves forward with the end of the conversation so that the heads-up-display content is at a salient position in the context window. It is NOT manually authored by the user and should never be responded to directly. The user will have no idea what you're talking about. They can't see it in the TUI. The pi:hud contains information provided by plugins such as cwd, git status, todo lists, and automated notifications.",
+			"The ```<pi:hud>``` is a programmatically injected message from the coding harness that moves forward with the end of the conversation so that the heads-up-display content is at a salient position in the context window. It should never be responded to directly. The user will have no idea what you're talking about. They can't see it in the TUI. The pi:hud contains information provided by plugins such as cwd, git status, todo lists, and automated notifications.",
 			"</pi:hud>",
 		].join("\n");
 		return { systemPrompt: `${event.systemPrompt}\n\n${hudDescription}` };
@@ -148,14 +148,14 @@ export default function (pi: ExtensionAPI): void {
 					{
 						id: callId,
 						type: "function",
-						function: { name: "__hud", arguments: "{}" },
+						function: { name: "__hud", arguments: hud },
 					},
 				],
 			},
 			{
 				role: "tool",
 				tool_call_id: callId,
-				content: hud,
+				content: "ok",
 			},
 		);
 
