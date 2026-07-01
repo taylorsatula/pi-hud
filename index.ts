@@ -1,26 +1,28 @@
 /**
  * pi-hud — Ambient HUD framework for the model.
  *
- * Injects a small "HUD" user message into the model's context on every LLM
- * call. pi-hud itself carries no built-in sections — it is purely the vessel
- * that collects contributed sections from other extensions via the shared
- * EventBus (`hud_section`) and composes them into the injected block.
+ * Injects a small "HUD" assistant message into the outbound provider
+ * request on every LLM call. pi-hud itself carries no built-in sections —
+ * it is purely the vessel that collects contributed sections from other
+ * extensions via the shared EventBus (`hud_section`) and composes them
+ * into the injected block.
  *
  * Design (see README.md for full rationale):
  *
- *  - Injection happens in the `context` event, which hands us a deep copy of
- *    the message list safe to mutate. Nothing returned here is written to
- *    the session, so there is zero transcript accumulation and zero cost to
- *    stored history. Old HUDs don't recede into history — they simply don't
- *    exist next call.
+ *  - Injection happens in the `before_provider_request` event, which fires
+ *    right before the HTTP request leaves for the provider. The HUD is
+ *    inserted as an assistant-role message directly into the payload's
+ *    messages array. This is purely outbound mutation — nothing touches
+ *    the persisted transcript, so there is zero accumulation and zero
+ *    compaction tax.
  *
- *  - The HUD is a user-role message placed at the tail (or just before the
- *    current user prompt when the prompt is the last message), where
- *    attention weight is highest. A framing line inside the block tells the
- *    model it is injected ambient context, not an instruction to respond to.
+ *  - The HUD is placed before any trailing "tool" role messages so the
+ *    freshest tool output stays at the absolute tail. When there are no
+ *    trailing tool results, it is appended after whatever is last
+ *    (e.g., after a user message so the assistant replies to both).
  *
- *  - No cache markers. KV cache on the stable prefix is preserved by leaving
- *    all stable history byte-identical and mutating only the tail.
+ *  - No cache markers. KV cache on the stable prefix is preserved by
+ *    leaving all stable history byte-identical and mutating only the tail.
  *
  *  - Hidden from the user: no widget, no transcript footprint. Set the
  *    environment variable PI_HUD_DEBUG=1 to log the injected payload to
@@ -114,36 +116,39 @@ export default function (pi: ExtensionAPI): void {
 		await refresh(ctx);
 	});
 
-	// Inject the cached HUD as a user message at the tail of every LLM call.
+	// Inject the HUD as a synthetic tool-call pair (assistant → toolResult).
+	// The model sees it as a completed harness-side tool invocation — not
+	// free-text to echo back.
 	pi.on("context", async (event) => {
 		if (pi.getFlag("no-hud") === true) return;
 		const hud = cachedHud;
 		if (!hud) return;
 
-		if (process.env.PI_HUD_DEBUG) {
-			// eslint-disable-next-line no-console
-			console.error(
-				`[pi-hud] injecting HUD (${hud.length} chars) before LLM call:\n${hud}\n`,
-			);
-		}
+		const callId = `hud_${Date.now()}`;
 
-		const hudMsg = {
-			role: "user" as const,
-			content: hud,
+		const hudAssistant = {
+			role: "assistant" as const,
+			content: [
+				{
+					type: "toolCall" as const,
+					id: callId,
+					name: "__hud",
+					arguments: {},
+				},
+			],
+			timestamp: Date.now(),
+		};
+
+		const hudResult = {
+			role: "toolResult" as const,
+			toolCallId: callId,
+			toolName: "__hud",
+			content: [{ type: "text" as const, text: hud }],
 			timestamp: Date.now(),
 		};
 
 		const msgs = event.messages;
-		const last = msgs[msgs.length - 1];
-		let out;
-		if (last && last.role === "user") {
-			// First call of a turn: brief right before the user prompt so the
-			// prompt remains the last message to respond to.
-			out = [...msgs.slice(0, -1), hudMsg, last];
-		} else {
-			// Tool follow-up (tail is toolResult) or other: append at tail.
-			out = [...msgs, hudMsg];
-		}
+		const out = [...msgs, hudAssistant, hudResult];
 		return { messages: out };
 	});
 }
