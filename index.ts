@@ -116,40 +116,49 @@ export default function (pi: ExtensionAPI): void {
 		await refresh(ctx);
 	});
 
-	// Inject the HUD as a synthetic tool-call pair (assistant → toolResult).
+	// Inject the HUD as a synthetic tool-call pair (assistant → toolResult)
+	// just-in-time right before the request leaves for the provider.
+	// Uses before_provider_request so the harness never sees these messages
+	// — no transcript persistence, no TUI rendering, zero compaction tax.
 	// The model sees it as a completed harness-side tool invocation — not
 	// free-text to echo back. Content is structured JSON with one key per
-	// contributed section (e.g. {"time":"...","context":"...","cwd":"~"}).
-	pi.on("context", async (event) => {
-		if (pi.getFlag("no-hud") === true) return;
+	// contributed section.
+	pi.on("before_provider_request", (event) => {
+		if (pi.getFlag("no-hud") === true) return event.payload;
 		const hud = cachedHud;
-		if (!hud) return;
+		if (!hud) return event.payload;
 
+		const payload = event.payload;
+		if (
+			!payload ||
+			typeof payload !== "object" ||
+			!("messages" in payload) ||
+			!Array.isArray((payload as Record<string, unknown>).messages)
+		) {
+			return event.payload;
+		}
+
+		const msgs = (payload as Record<string, unknown>).messages as any[];
 		const callId = `hud_${Date.now()}`;
 
-		const hudAssistant = {
-			role: "assistant" as const,
-			content: [
-				{
-					type: "toolCall" as const,
-					id: callId,
-					name: "__hud",
-					arguments: {},
-				},
-			],
-			timestamp: Date.now(),
-		};
+		msgs.push(
+			{
+				role: "assistant",
+				tool_calls: [
+					{
+						id: callId,
+						type: "function",
+						function: { name: "__hud", arguments: "{}" },
+					},
+				],
+			},
+			{
+				role: "tool",
+				tool_call_id: callId,
+				content: hud,
+			},
+		);
 
-		const hudResult = {
-			role: "toolResult" as const,
-			toolCallId: callId,
-			toolName: "__hud",
-			content: [{ type: "text" as const, text: hud }],
-			timestamp: Date.now(),
-		};
-
-		const msgs = event.messages;
-		const out = [...msgs, hudAssistant, hudResult];
-		return { messages: out };
+		return event.payload;
 	});
 }
