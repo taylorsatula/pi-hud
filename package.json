@@ -1,6 +1,6 @@
 {
   "name": "@taylorsatula/pi-hud",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Ambient HUD injected into the model's context on every LLM call. Live briefing notes (time, context budget, git, cwd) that refresh as assistant messages complete — kept off the transcript and out of the user's view.",
   "keywords": ["pi-package"],
   "type": "module",
