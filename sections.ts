@@ -31,13 +31,14 @@ const RENDER_TIMEOUT_MS = 2_000;
  * Render all contributed sections in parallel.
  * Each section is awaited independently with a timeout; errors are caught
  * per-section so one bad render doesn't kill the whole HUD.
- * Returns only non-null results, preserving registration order.
+ * Returns a record mapping label → value for non-null results,
+ * preserving registration order via insertion order.
  */
 export async function renderContributedSections(
 	contributions: Map<string, HudSection>,
 	ctx: ExtensionContext,
-): Promise<string[]> {
-	const results: string[] = [];
+): Promise<Record<string, string>> {
+	const result: Record<string, string> = {};
 	const errors: Array<{ id: string; error: unknown }> = [];
 
 	for (const [id, section] of contributions) {
@@ -50,7 +51,7 @@ export async function renderContributedSections(
 			]);
 			const value = await timedRender;
 			if (value != null) {
-				results.push(`${section.label}: ${value}`);
+				result[section.label] = value.trim();
 			}
 		} catch (err) {
 			errors.push({ id, error: err });
@@ -65,5 +66,5 @@ export async function renderContributedSections(
 		);
 	}
 
-	return results;
+	return result;
 }

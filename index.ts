@@ -118,7 +118,8 @@ export default function (pi: ExtensionAPI): void {
 
 	// Inject the HUD as a synthetic tool-call pair (assistant → toolResult).
 	// The model sees it as a completed harness-side tool invocation — not
-	// free-text to echo back.
+	// free-text to echo back. Content is structured JSON with one key per
+	// contributed section (e.g. {"time":"...","context":"...","cwd":"~"}).
 	pi.on("context", async (event) => {
 		if (pi.getFlag("no-hud") === true) return;
 		const hud = cachedHud;
