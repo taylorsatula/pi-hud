@@ -7,7 +7,7 @@ This is a port of the "HUD" pattern (see `botwithmemory`'s `<mira:hud>`), adapte
 ## What it does
 
 - **Refreshes on agent start, assistant messages, and tool execution end.** The HUD is rebuilt at the start of each user prompt, after every assistant message completes, and after each tool execution ends. This keeps the HUD ≤ one tool call stale mid-agentic-run.
-- **Injects on every LLM call** via the `before_provider_request` event, which fires right before the HTTP request leaves for the provider. The HUD is inserted as a synthetic assistant/tool-call pair directly into the payload's messages array. This is purely outbound mutation — nothing touches the persisted transcript, so there is zero accumulation and zero compaction tax.
+- **Injects on every LLM call** via the `before_provider_request` event, which fires right before the HTTP request leaves for the provider. If any section marked the HUD dirty, pi-hud re-renders sections before injection. The HUD is inserted as a synthetic assistant/tool-call pair directly into the payload's messages array. This is purely outbound mutation — nothing touches the persisted transcript, so there is zero accumulation and zero compaction tax.
 - **Adds zero transcript clutter.** Nothing returned from `before_provider_request` is written to the session. Old HUDs don't recede into history — they simply don't exist next call. There is no accumulation cost, no compaction tax, and no footprint the user has to wade through.
 - **Is hidden from the user.** No widget, no transcript entry, nothing in the TUI. The HUD is exclusively for the model's ambient awareness. Set `PI_HUD_DEBUG=1` to log the injected payload to stderr for verification.
 
@@ -16,21 +16,21 @@ This is a port of the "HUD" pattern (see `botwithmemory`'s `<mira:hud>`), adapte
 The HUD is injected as a synthetic assistant/tool-call pair — not free-text to echo back:
 
 ```
-{ assistant: { tool_calls: [{ id: "hud_...", type: "function", function: { name: "__hud", arguments: "{\"Time\":\"...\",\"Context\":\"...\",\"CWD\":\"~\"}" } }] },
-  tool:   { tool_call_id: "hud_...", content: "ok" } }
+{ assistant: { tool_calls: [{ id: "hud_...", type: "function", function: { name: "synthetic_toolcall", arguments: "{\"request\":\"read_hud\",\"format\":\"json_object_by_section_label\",\"sections\":[\"Time\",\"Context\",\"CWD\",\"Pi Overwatch\"]}" } }] },
+  tool:   { tool_call_id: "hud_...", content: "{\"Time\":\"...\",\"Context\":\"...\",\"CWD\":\"~\",\"Pi Overwatch\":{...}}" } }
 ```
 
-The `arguments` field contains structured JSON with one key per contributed section (label → value). Sections returning `null` are omitted entirely. If all sections return null, no HUD is injected.
+The synthetic call arguments list the section labels being requested. The synthetic tool result contains structured JSON with one key per contributed section (label → JSON-compatible value). Sections returning `null` are omitted entirely. If all sections return null, no HUD is injected.
 
 ## Placement
 
-The HUD is always appended at the absolute tail of the messages array. It uses the assistant/tool role pair, which is provider-legal everywhere and avoids role-order issues.
+The HUD is inserted immediately before the outbound payload's current tail message; empty payloads are left unchanged. On first calls, this keeps the current user prompt as absolute tail while the HUD tool result sits at tail-1. On tool follow-ups, the freshest tool result remains last. The model should never see the HUD as the final message. It uses the assistant/tool role pair, which is provider-legal everywhere and avoids role-order issues.
 
 No cache markers are emitted. KV cache on the stable prefix is preserved by construction: the HUD mutates only the tail, leaving all stable history byte-identical. The HUD tokens are uncached by necessity (the content changes every refresh) — you can't both cache a block and have it update.
 
 ## System prompt injection
 
-The model understands what `<pi:hud>` blocks are because a brief description is injected into the system prompt on `before_agent_start` — no inline framing text needed in the HUD itself.
+The model understands the synthetic `synthetic_toolcall` HUD pair because a brief description is injected into the system prompt on `before_agent_start` — no inline framing text needed in the HUD itself.
 
 ## Controls
 
@@ -60,9 +60,9 @@ All HUD content comes from other extensions contributing via the shared EventBus
 
 1. A contributing extension emits `{ id, label, render }` onto `pi.events` during its factory init.
 2. pi-hud subscribes to that event and buffers contributions in a Map keyed by `id`.
-3. On every HUD rebuild (`agent_start`, `message_end`, `tool_execution_end`), each contributed section is rendered fresh via its `render(ctx)` function, processed sequentially in registration order.
+3. On every HUD rebuild (`agent_start`, `message_end`, `tool_execution_end`, or explicit `hud_refresh`), each contributed section is rendered fresh via its `render(ctx)` function, processed sequentially in registration order.
 
-If pi-hud isn't installed, emissions silently do nothing — no coupling required.
+If pi-hud isn't installed, emissions silently do nothing — no coupling required. Async producers that update internal state after the triggering event can emit `hud_refresh` with the current `ExtensionContext` to mark pi-hud's cached payload dirty and start an immediate rebuild; `before_provider_request` also checks the dirty flag and refreshes deterministically before injection.
 
 ### Example
 
@@ -87,13 +87,15 @@ The result appears in the HUD JSON as:
 {"Memory":"12 entries loaded"}
 ```
 
+Sections may also return structured objects, which are preserved as nested JSON instead of stringified into a line.
+
 ### Contract
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | `string` | Unique key. Duplicate IDs: last wins (warning logged). |
 | `label` | `string` | Shown as the JSON key, e.g. `"Memory"`, `"Tasks"`. |
-| `render(ctx)` | `(ExtensionContext) => Promise<string \| null> \| string \| null` | Called fresh on every HUD rebuild. Return `null` to omit the line. May be async. |
+| `render(ctx)` | `(ExtensionContext) => Promise<HudSectionValue \| null> \| HudSectionValue \| null` | Called fresh on every HUD rebuild. Return a JSON-compatible value to include the section, or `null` to omit it. May be async. |
 
 ### Error handling
 
@@ -104,8 +106,8 @@ The result appears in the HUD JSON as:
 ## Files
 
 - `index.ts` — event wiring, refresh triggers, injection.
-- `sections.ts` — `HudSection` interface + sequential renderer with per-section timeout.
-- `compose.ts` — pure HUD block assembler (JSON serialization).
+- `sections.ts` — `HudSection` interface, `HudSectionValue` JSON-value type, and sequential renderer with per-section timeout.
+- `compose.ts` — pure HUD block assembler preserving nested section values during JSON serialization.
 - `package.json` — pi manifest.
 
 ## Why no persistence

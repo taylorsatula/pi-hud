@@ -10,18 +10,21 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // ── Contributed section types ────────────────────────────────────────
 
+/** JSON-compatible value emitted by a HUD section. */
+export type HudSectionValue = string | number | boolean | HudSectionValue[] | { [key: string]: HudSectionValue };
+
 /** A HUD section contributed by another extension via the EventBus. */
 export interface HudSection {
 	/** Unique key — prevents duplicate registrations (last wins). */
 	id: string;
-	/** Label shown before the rendered value, e.g. "Memory", "Tasks". */
+	/** Label used as the JSON key, e.g. "Memory", "Tasks". */
 	label: string;
 	/**
 	 * Render function called fresh on every HUD rebuild.
-	 * Return a string to include the line, or null to omit it.
+	 * Return a JSON-compatible value to include the section, or null to omit it.
 	 * May be async (file reads, API calls, etc.).
 	 */
-	render(ctx: ExtensionContext): Promise<string | null> | string | null;
+	render(ctx: ExtensionContext): Promise<HudSectionValue | null> | HudSectionValue | null;
 }
 
 /** Timeout for individual contributed section renders (ms). */
@@ -31,14 +34,14 @@ const RENDER_TIMEOUT_MS = 2_000;
  * Render all contributed sections in parallel.
  * Each section is awaited independently with a timeout; errors are caught
  * per-section so one bad render doesn't kill the whole HUD.
- * Returns a record mapping label → value for non-null results,
+ * Returns a record mapping label → JSON-compatible value for non-null results,
  * preserving registration order via insertion order.
  */
 export async function renderContributedSections(
 	contributions: Map<string, HudSection>,
 	ctx: ExtensionContext,
-): Promise<Record<string, string>> {
-	const result: Record<string, string> = {};
+): Promise<Record<string, HudSectionValue>> {
+	const result: Record<string, HudSectionValue> = {};
 	const errors: Array<{ id: string; error: unknown }> = [];
 
 	for (const [id, section] of contributions) {
@@ -51,7 +54,7 @@ export async function renderContributedSections(
 			]);
 			const value = await timedRender;
 			if (value != null) {
-				result[section.label] = value.trim();
+				result[section.label] = typeof value === "string" ? value.trim() : value;
 			}
 		} catch (err) {
 			errors.push({ id, error: err });

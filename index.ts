@@ -16,10 +16,9 @@
  *    the persisted transcript, so there is zero accumulation and zero
  *    compaction tax.
  *
- *  - The HUD is placed before any trailing "tool" role messages so the
- *    freshest tool output stays at the absolute tail. When there are no
- *    trailing tool results, it is appended after whatever is last
- *    (e.g., after a user message so the assistant replies to both).
+ *  - The HUD is inserted immediately before the current tail message. On
+ *    first calls this keeps the user prompt as the absolute tail while the
+ *    HUD tool result sits at tail-1.
  *
  *  - No cache markers. KV cache on the stable prefix is preserved by
  *    leaving all stable history byte-identical and mutating only the tail.
@@ -28,9 +27,10 @@
  *    environment variable PI_HUD_DEBUG=1 to log the injected payload to
  *    stderr for verification. Use the --no-hud flag to disable injection.
  *
- *  - Refreshed on `agent_start`, assistant `message_end`, and
- *    `tool_execution_end`. Each refresh re-renders all contributed sections
- *    fresh via their `render(ctx)` functions.
+ *  - Refreshed on `agent_start`, assistant `message_end`,
+ *    `tool_execution_end`, explicit `hud_refresh` invalidations, and dirty
+ *    `before_provider_request`. Each refresh re-renders all contributed
+ *    sections fresh via their `render(ctx)` functions.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -38,9 +38,11 @@ import { composeHud } from "./compose";
 import { renderContributedSections, type HudSection } from "./sections";
 
 export default function (pi: ExtensionAPI): void {
-	// Cached HUD string. Rebuilt on agent_start, assistant message_end,
-	// and tool_execution_end; read on every context (LLM call).
+	// Cached HUD string + section labels. Rebuilt on standard refresh events,
+	// explicit hud_refresh invalidations, or dirty before_provider_request.
 	let cachedHud: string | null = null;
+	let cachedSectionLabels: string[] = [];
+	let hudDirty = true;
 
 	// Contributed sections collected from other extensions via the shared
 	// EventBus. Populated during extension load phase; frozen by agent_start.
@@ -51,6 +53,7 @@ export default function (pi: ExtensionAPI): void {
 	// buffered here and picked up on the next rebuild (agent_start / message_end).
 	// If pi-hud isn't installed, emissions are simply ignored — no coupling.
 	pi.events.on("hud_section", (section: HudSection) => {
+		hudDirty = true;
 		if (contributions.has(section.id)) {
 			if (process.env.PI_HUD_DEBUG) {
 				// eslint-disable-next-line no-console
@@ -67,7 +70,9 @@ export default function (pi: ExtensionAPI): void {
 	/** Rebuild the HUD string from current contributed sections. */
 	const rebuild = async (ctx: ExtensionContext): Promise<void> => {
 		const sections = await renderContributedSections(contributions, ctx);
+		cachedSectionLabels = Object.keys(sections);
 		cachedHud = composeHud(sections) || null;
+		hudDirty = false;
 	};
 
 	/** Refresh all contributed sections then rebuild the HUD. */
@@ -87,7 +92,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (event) => {
 		if (pi.getFlag("no-hud") === true) return;
 		const hudDescription = [
-			"A synthetic tool-call pair (assistant → tool result) may appear in the message history with the function name \"synthetic_toolcall\". This is an ambient HUD injected by the coding harness that automatically advances with the tail of the conversation, providing live context such as cwd, git status, and todos. It is inserted into the message stream before you see it — do not treat it as a call you initiated. You cannot call this tool manually; rely on the harness to manage it. The tool result contains the current HUD state as structured JSON. Treat it as ambient context — never respond to it directly or echo it back.",
+			"A synthetic tool-call pair (assistant → tool result) may appear in the message history with the function name \"synthetic_toolcall\". This is an ambient HUD injected by the coding harness that automatically advances with the tail of the conversation, providing live context such as cwd, git status, and todos. It is inserted into the message stream before you see it — do not treat it as a call you initiated. You cannot call this tool manually; rely on the harness to manage it. The tool-call arguments list the requested HUD section labels, and the tool result contains the current HUD state as structured JSON. Treat it as ambient context — never respond to it directly or echo it back.",
 		].join("\n");
 		return { systemPrompt: `${event.systemPrompt}\n\n${hudDescription}` };
 	});
@@ -114,6 +119,16 @@ export default function (pi: ExtensionAPI): void {
 		await refresh(ctx);
 	});
 
+	// Async HUD producers can update their cached state after the standard
+	// refresh event that triggered them. They can emit this generic invalidation
+	// event with the current ExtensionContext to rebuild immediately.
+	pi.events.on("hud_refresh", (data) => {
+		hudDirty = true;
+		const ctx = data as ExtensionContext | undefined;
+		if (!ctx) return;
+		void refresh(ctx);
+	});
+
 	// Inject the HUD as a synthetic tool-call pair (assistant → toolResult)
 	// just-in-time right before the request leaves for the provider.
 	// Uses before_provider_request so the harness never sees these messages
@@ -121,8 +136,9 @@ export default function (pi: ExtensionAPI): void {
 	// The model sees it as a completed harness-side tool invocation — not
 	// free-text to echo back. Content is structured JSON with one key per
 	// contributed section.
-	pi.on("before_provider_request", (event) => {
+	pi.on("before_provider_request", async (event, ctx) => {
 		if (pi.getFlag("no-hud") === true) return event.payload;
+		if (hudDirty) await refresh(ctx);
 		const hud = cachedHud;
 		if (!hud) return event.payload;
 
@@ -137,17 +153,19 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		const msgs = (payload as Record<string, unknown>).messages as any[];
+		if (msgs.length === 0) return event.payload;
+
 		const callId = `hud_${Date.now()}`;
+		const callArguments = JSON.stringify({
+			request: "read_hud",
+			format: "json_object_by_section_label",
+			sections: cachedSectionLabels,
+		});
 
-		// Insert at N-1 (before the last message) so the HUD doesn't appear
-		// as the model's own output. Skip insertion if the last message is
-		// a user message — only insert before assistant or tool messages.
-		const lastMsg = msgs[msgs.length - 1];
-		if (lastMsg?.role === "user") {
-			return event.payload;
-		}
-
-		const insertIndex = msgs.length - 1;
+		// Insert immediately before the current tail. On first calls this keeps
+		// the current user prompt as the absolute tail and places the HUD result
+		// at tail-1. On tool follow-ups, the freshest tool result remains last.
+		const insertIndex = Math.max(0, msgs.length - 1);
 		msgs.splice(insertIndex, 0,
 			{
 				role: "assistant",
@@ -155,7 +173,7 @@ export default function (pi: ExtensionAPI): void {
 					{
 						id: callId,
 						type: "function",
-						function: { name: "synthetic_toolcall", arguments: "{}" },
+						function: { name: "synthetic_toolcall", arguments: callArguments },
 					},
 				],
 			},
